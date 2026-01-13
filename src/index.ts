@@ -22,11 +22,21 @@ import {
   StartInstancesCommand,
   StopInstancesCommand,
   TerminateInstancesCommand,
+  DeleteVpcCommand,
+  DeleteSubnetCommand,
+  DeleteSecurityGroupCommand,
+  DeleteKeyPairCommand,
+  DeleteInternetGatewayCommand,
+  DetachInternetGatewayCommand,
+  DescribeVolumesCommand,
+  ModifyVolumeCommand,
+  DescribeVolumesModificationsCommand,
   waitUntilInstanceRunning,
   waitUntilInstanceStopped,
+  waitUntilInstanceTerminated,
   type Instance,
 } from "@aws-sdk/client-ec2";
-import { mkdir, readFile, writeFile, chmod } from "node:fs/promises";
+import { mkdir, readFile, writeFile, chmod, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -47,6 +57,7 @@ type SbxConfig = {
   instanceType: string;
   amiId: string;
   sshUser: string;
+  volumeSize?: number;
   aws?: AwsConfig;
 };
 
@@ -55,6 +66,7 @@ const DEFAULT_CONFIG: SbxConfig = {
   instanceType: "t4g.micro",
   amiId: "debian-12",
   sshUser: "admin",
+  volumeSize: 8,
   aws: {
     profile: "default",
   },
@@ -76,7 +88,9 @@ Usage:
   sbx init                                      Initialize config
   sbx list|ls                                   List instances  
   sbx delete|rm <instance-name>                 Terminate instance
+  sbx resize <instance-name> <size-gb>          Resize volume (instance must be stopped)
   sbx tunnel|proxy <instance-name> <local>:<remote>   SSH tunnel
+  sbx destroy                                   Delete all sbx resources
   sbx <instance-name>                           Connect (creates if needed)
 `;
 
@@ -487,6 +501,7 @@ async function ensureInstance(
     console.log(`Instance "${name}" does not exist.`);
     console.log(`  Type: ${config.instanceType}`);
     console.log(`  AMI: ${config.amiId} (${amiId})`);
+    console.log(`  Volume: ${config.volumeSize ?? 8}GB`);
     console.log(`  Region: ${config.region}`);
 
     const confirmed = await confirm("Create new instance?");
@@ -502,6 +517,16 @@ async function ensureInstance(
         KeyName: infra.keyName,
         MinCount: 1,
         MaxCount: 1,
+        BlockDeviceMappings: [
+          {
+            DeviceName: "/dev/xvda",
+            Ebs: {
+              VolumeSize: config.volumeSize ?? 8,
+              VolumeType: "gp3",
+              DeleteOnTermination: true,
+            },
+          },
+        ],
         NetworkInterfaces: [
           {
             DeviceIndex: 0,
@@ -697,6 +722,244 @@ async function cmdDelete(config: SbxConfig, name: string): Promise<void> {
   console.log(`Terminated ${name} (${instance.InstanceId}).`);
 }
 
+async function cmdResize(config: SbxConfig, name: string, sizeGb: number): Promise<void> {
+  const client = getEc2Client(config);
+  const instances = await describeSbxInstances(client, name);
+  const instance = instances[0];
+
+  if (!instance?.InstanceId) {
+    throw new Error(`No instance found with name ${name}`);
+  }
+
+  const state = instance.State?.Name;
+  if (state !== "stopped") {
+    throw new Error(`Instance must be stopped to resize. Current state: ${state}`);
+  }
+
+  // Get root volume ID
+  const rootDevice = instance.RootDeviceName;
+  const rootMapping = instance.BlockDeviceMappings?.find(
+    (m) => m.DeviceName === rootDevice
+  );
+  const volumeId = rootMapping?.Ebs?.VolumeId;
+
+  if (!volumeId) {
+    throw new Error("Could not find root volume for instance");
+  }
+
+  // Get current volume size
+  const volumeInfo = await client.send(
+    new DescribeVolumesCommand({
+      VolumeIds: [volumeId],
+    })
+  );
+
+  const currentSize = volumeInfo.Volumes?.[0]?.Size;
+  if (!currentSize) {
+    throw new Error("Could not determine current volume size");
+  }
+
+  if (sizeGb <= currentSize) {
+    throw new Error(`New size (${sizeGb}GB) must be larger than current size (${currentSize}GB). EBS volumes can only be increased.`);
+  }
+
+  log(`Resizing volume ${volumeId} from ${currentSize}GB to ${sizeGb}GB...`);
+
+  await client.send(
+    new ModifyVolumeCommand({
+      VolumeId: volumeId,
+      Size: sizeGb,
+    })
+  );
+
+  // Wait for modification to complete
+  log("Waiting for volume modification to complete...");
+  const maxAttempts = 60;
+  for (let i = 0; i < maxAttempts; i++) {
+    const mods = await client.send(
+      new DescribeVolumesModificationsCommand({
+        VolumeIds: [volumeId],
+      })
+    );
+
+    const mod = mods.VolumesModifications?.[0];
+    const modState = mod?.ModificationState;
+
+    if (modState === "completed" || modState === "optimizing") {
+      break;
+    }
+
+    if (modState === "failed") {
+      throw new Error(`Volume modification failed: ${mod?.StatusMessage}`);
+    }
+
+    await Bun.sleep(5000);
+  }
+
+  console.log(`Volume resized to ${sizeGb}GB. Start the instance to apply filesystem changes.`);
+}
+
+async function cmdDestroy(config: SbxConfig): Promise<void> {
+  const client = getEc2Client(config);
+
+  // Find all sbx resources
+  const instances = await describeSbxInstances(client);
+  
+  const vpcs = await client.send(
+    new DescribeVpcsCommand({
+      Filters: [{ Name: "tag:Name", Values: [SBX_TAG] }],
+    })
+  );
+  const vpcId = vpcs.Vpcs?.[0]?.VpcId;
+
+  const subnets = vpcId
+    ? await client.send(
+        new DescribeSubnetsCommand({
+          Filters: [
+            { Name: "vpc-id", Values: [vpcId] },
+            { Name: "tag:Name", Values: [SBX_TAG] },
+          ],
+        })
+      )
+    : { Subnets: [] };
+
+  const securityGroups = vpcId
+    ? await client.send(
+        new DescribeSecurityGroupsCommand({
+          Filters: [
+            { Name: "vpc-id", Values: [vpcId] },
+            { Name: "group-name", Values: [SBX_TAG] },
+          ],
+        })
+      )
+    : { SecurityGroups: [] };
+
+  const igws = vpcId
+    ? await client.send(
+        new DescribeInternetGatewaysCommand({
+          Filters: [{ Name: "attachment.vpc-id", Values: [vpcId] }],
+        })
+      )
+    : { InternetGateways: [] };
+
+  const keyName = `sbx-${config.region}`;
+  const keyPath = path.join(KEYS_DIR, `${keyName}.pem`);
+  const keys = await client.send(
+    new DescribeKeyPairsCommand({
+      Filters: [{ Name: "key-name", Values: [keyName] }],
+    })
+  );
+
+  // Show what will be deleted
+  console.log("The following resources will be deleted:");
+  console.log("");
+
+  if (instances.length > 0) {
+    console.log(`  Instances (${instances.length}):`);
+    for (const inst of instances) {
+      const name = inst.Tags?.find((t) => t.Key === "Name")?.Value ?? "unnamed";
+      console.log(`    - ${name} (${inst.InstanceId})`);
+    }
+  }
+
+  if (keys.KeyPairs?.length) {
+    console.log(`  Key Pairs: ${keyName}`);
+  }
+
+  if (securityGroups.SecurityGroups?.length) {
+    console.log(`  Security Groups: ${securityGroups.SecurityGroups[0].GroupId}`);
+  }
+
+  if (subnets.Subnets?.length) {
+    console.log(`  Subnets: ${subnets.Subnets[0].SubnetId}`);
+  }
+
+  if (igws.InternetGateways?.length) {
+    console.log(`  Internet Gateways: ${igws.InternetGateways[0].InternetGatewayId}`);
+  }
+
+  if (vpcId) {
+    console.log(`  VPCs: ${vpcId}`);
+  }
+
+  const hasResources =
+    instances.length > 0 ||
+    keys.KeyPairs?.length ||
+    securityGroups.SecurityGroups?.length ||
+    subnets.Subnets?.length ||
+    igws.InternetGateways?.length ||
+    vpcId;
+
+  if (!hasResources) {
+    console.log("  (none)");
+    return;
+  }
+
+  console.log("");
+  const confirmed = await confirm("Are you sure you want to delete all sbx resources?");
+  if (!confirmed) {
+    throw new Error("Aborted.");
+  }
+
+  // 1. Terminate all instances
+  if (instances.length > 0) {
+    const instanceIds = instances.map((i) => i.InstanceId!);
+    log(`Terminating ${instanceIds.length} instance(s)...`);
+    await client.send(new TerminateInstancesCommand({ InstanceIds: instanceIds }));
+    await waitUntilInstanceTerminated(
+      { client, maxWaitTime: 300 },
+      { InstanceIds: instanceIds }
+    );
+  }
+
+  // 2. Delete key pair
+  if (keys.KeyPairs?.length) {
+    log(`Deleting key pair ${keyName}...`);
+    await client.send(new DeleteKeyPairCommand({ KeyName: keyName }));
+    try {
+      await unlink(keyPath);
+    } catch {
+      // Key file may not exist locally
+    }
+  }
+
+  // 3. Delete security group
+  if (securityGroups.SecurityGroups?.length) {
+    const sgId = securityGroups.SecurityGroups[0].GroupId!;
+    log(`Deleting security group ${sgId}...`);
+    await client.send(new DeleteSecurityGroupCommand({ GroupId: sgId }));
+  }
+
+  // 4. Delete subnet
+  if (subnets.Subnets?.length) {
+    const subnetId = subnets.Subnets[0].SubnetId!;
+    log(`Deleting subnet ${subnetId}...`);
+    await client.send(new DeleteSubnetCommand({ SubnetId: subnetId }));
+  }
+
+  // 5. Detach and delete internet gateway
+  if (igws.InternetGateways?.length && vpcId) {
+    const igwId = igws.InternetGateways[0].InternetGatewayId!;
+    log(`Detaching internet gateway ${igwId}...`);
+    await client.send(
+      new DetachInternetGatewayCommand({
+        InternetGatewayId: igwId,
+        VpcId: vpcId,
+      })
+    );
+    log(`Deleting internet gateway ${igwId}...`);
+    await client.send(new DeleteInternetGatewayCommand({ InternetGatewayId: igwId }));
+  }
+
+  // 6. Delete VPC
+  if (vpcId) {
+    log(`Deleting VPC ${vpcId}...`);
+    await client.send(new DeleteVpcCommand({ VpcId: vpcId }));
+  }
+
+  console.log("All sbx resources deleted.");
+}
+
 async function cmdConnect(config: SbxConfig, name: string): Promise<void> {
   const client = getEc2Client(config);
   const infra = await ensureInfrastructure(client, config.region);
@@ -796,10 +1059,26 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "resize") {
+    const name = requireArg(args[1], "instance name");
+    const sizeStr = requireArg(args[2], "size in GB");
+    const sizeGb = parseInt(sizeStr, 10);
+    if (isNaN(sizeGb) || sizeGb <= 0) {
+      throw new Error("Size must be a positive number in GB");
+    }
+    await cmdResize(config, name, sizeGb);
+    return;
+  }
+
   if (command === "tunnel" || command === "proxy") {
     const name = requireArg(args[1], "instance name");
     const portMap = requireArg(args[2], "port map");
     await cmdTunnel(config, name, portMap);
+    return;
+  }
+
+  if (command === "destroy") {
+    await cmdDestroy(config);
     return;
   }
 

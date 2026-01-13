@@ -37,6 +37,7 @@ Config lives at `~/.config/sbx/config.json`:
   "instanceType": "c8g.2xlarge",
   "amiId": "debian-13",
   "sshUser": "admin",
+  "volumeSize": 20,
   "aws": {
     "accessKeyId": "...",
     "secretAccessKey": "..."
@@ -52,6 +53,7 @@ Config lives at `~/.config/sbx/config.json`:
 | `instanceType` | EC2 instance type |
 | `amiId` | AMI ID or alias |
 | `sshUser` | SSH username (depends on AMI) |
+| `volumeSize` | Root volume size in GB (default: 8) |
 | `aws.accessKeyId` | AWS access key (optional if using profile) |
 | `aws.secretAccessKey` | AWS secret key |
 | `aws.profile` | AWS profile name (alternative to keys) |
@@ -83,6 +85,12 @@ sbx rm <name>
 # SSH tunnel (forwards local port to remote)
 sbx tunnel <name> <local-port>:<remote-port>
 sbx proxy <name> 3000:3000
+
+# Resize volume (instance must be stopped)
+sbx resize <name> <size-gb>
+
+# Destroy all sbx resources (instances, VPC, etc.)
+sbx destroy
 ```
 
 ## Auto-provisioned Resources
