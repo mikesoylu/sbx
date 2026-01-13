@@ -80,6 +80,13 @@ const AMI_PATTERNS: Record<string, { owner: string; pattern: string }> = {
   "ubuntu-24.04": { owner: "099720109477", pattern: "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-arm64-server-*" },
   "al2023": { owner: "137112412989", pattern: "al2023-ami-2023*-arm64" },
   "amazon-linux-2": { owner: "137112412989", pattern: "amzn2-ami-hvm-*-arm64-gp2" },
+
+  "debian-12-amd64": { owner: "136693071363", pattern: "debian-12-amd64-*" },
+  "debian-13-amd64": { owner: "136693071363", pattern: "debian-13-amd64-*" },
+  "ubuntu-22.04-amd64": { owner: "099720109477", pattern: "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*" },
+  "ubuntu-24.04-amd64": { owner: "099720109477", pattern: "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*" },
+  "al2023-amd64": { owner: "137112412989", pattern: "al2023-ami-2023*-x86_64" },
+  "amazon-linux-2-amd64": { owner: "137112412989", pattern: "amzn2-ami-hvm-*-x86_64-gp2" },
 };
 
 const HELP_TEXT = `sbx - EC2 sandbox helper
@@ -96,13 +103,6 @@ Usage:
 
 function log(msg: string): void {
   console.log(`[sbx] ${msg}`);
-}
-
-function expandHome(filePath: string): string {
-  if (filePath.startsWith("~/")) {
-    return path.join(os.homedir(), filePath.slice(2));
-  }
-  return filePath;
 }
 
 async function loadConfig(): Promise<SbxConfig> {
@@ -155,7 +155,6 @@ async function resolveAmiId(client: EC2Client, alias: string): Promise<string> {
       Owners: [pattern.owner],
       Filters: [
         { Name: "name", Values: [pattern.pattern] },
-        { Name: "architecture", Values: ["arm64"] },
         { Name: "state", Values: ["available"] },
       ],
     })
