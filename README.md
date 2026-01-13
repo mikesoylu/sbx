@@ -62,11 +62,21 @@ Config lives at `~/.config/sbx/config.json`:
 
 ### AMI Aliases
 
+**ARM64 (Graviton):**
+
 | Alias | SSH User |
 |-------|----------|
 | `debian-12`, `debian-13` | `admin` |
 | `ubuntu-22.04`, `ubuntu-24.04` | `ubuntu` |
 | `al2023`, `amazon-linux-2` | `ec2-user` |
+
+**x86_64 (AMD/Intel):**
+
+| Alias | SSH User |
+|-------|----------|
+| `debian-12-amd64`, `debian-13-amd64` | `admin` |
+| `ubuntu-22.04-amd64`, `ubuntu-24.04-amd64` | `ubuntu` |
+| `al2023-amd64`, `amazon-linux-2-amd64` | `ec2-user` |
 
 Or use a direct AMI ID: `ami-xxxxxxxxx`
 
