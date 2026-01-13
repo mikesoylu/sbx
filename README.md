@@ -13,8 +13,10 @@ A simple CLI tool for managing EC2 sandbox instances. Automatically provisions i
 
 ```bash
 bun install
-bun link  # Makes `sbx` available globally
+bun link sbx # Makes `sbx` available globally
 ```
+
+> Note: Make sure you have `export PATH="$HOME/.bun/bin:$PATH"` in your shell profile.
 
 ## Quick Start
 
