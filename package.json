@@ -1,0 +1,20 @@
+{
+  "name": "sbx",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "sbx": "src/index.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-ec2": "^3.758.0",
+    "@aws-sdk/credential-provider-node": "^3.758.0"
+  },
+  "module": "src/index.ts",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}

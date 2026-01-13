@@ -1,0 +1,102 @@
+# sbx
+
+A simple CLI tool for managing EC2 sandbox instances. Automatically provisions infrastructure and handles instance lifecycle.
+
+## Features
+
+- Auto-creates VPC, subnet, security group, and SSH key pair
+- Resolves AMI aliases (e.g., `debian-13`, `ubuntu-24.04`)
+- Stops instances on SSH disconnect (cost savings)
+- SSH tunneling for local development
+
+## Installation
+
+```bash
+bun install
+bun link  # Makes `sbx` available globally
+```
+
+## Quick Start
+
+```bash
+# Initialize config
+sbx init
+
+# Edit ~/.config/sbx/config.json with your settings
+# Then connect to an instance (creates if needed)
+sbx mybox
+```
+
+## Configuration
+
+Config lives at `~/.config/sbx/config.json`:
+
+```json
+{
+  "region": "us-west-1",
+  "instanceType": "c8g.2xlarge",
+  "amiId": "debian-13",
+  "sshUser": "admin",
+  "aws": {
+    "accessKeyId": "...",
+    "secretAccessKey": "..."
+  }
+}
+```
+
+### Options
+
+| Field | Description |
+|-------|-------------|
+| `region` | AWS region |
+| `instanceType` | EC2 instance type |
+| `amiId` | AMI ID or alias |
+| `sshUser` | SSH username (depends on AMI) |
+| `aws.accessKeyId` | AWS access key (optional if using profile) |
+| `aws.secretAccessKey` | AWS secret key |
+| `aws.profile` | AWS profile name (alternative to keys) |
+
+### AMI Aliases
+
+| Alias | SSH User |
+|-------|----------|
+| `debian-12`, `debian-13` | `admin` |
+| `ubuntu-22.04`, `ubuntu-24.04` | `ubuntu` |
+| `al2023`, `amazon-linux-2` | `ec2-user` |
+
+Or use a direct AMI ID: `ami-xxxxxxxxx`
+
+## Usage
+
+```bash
+# Connect to instance (creates if it doesn't exist)
+sbx <name>
+
+# List instances
+sbx list
+sbx ls
+
+# Delete instance
+sbx delete <name>
+sbx rm <name>
+
+# SSH tunnel (forwards local port to remote)
+sbx tunnel <name> <local-port>:<remote-port>
+sbx proxy <name> 3000:3000
+```
+
+## Auto-provisioned Resources
+
+On first use, sbx creates (tagged `sbx-managed`):
+
+- VPC (`10.0.0.0/16`)
+- Internet Gateway
+- Subnet (`10.0.1.0/24`)
+- Security Group (SSH access)
+- SSH Key Pair (stored at `~/.config/sbx/keys/`)
+
+These are reused for all instances in the region.
+
+## License
+
+MIT
