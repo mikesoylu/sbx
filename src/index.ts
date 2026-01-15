@@ -58,6 +58,7 @@ type SbxConfig = {
   amiId: string;
   sshUser: string;
   volumeSize?: number;
+  useSpot?: boolean;
   aws?: AwsConfig;
 };
 
@@ -498,7 +499,7 @@ async function ensureInstance(
     const amiId = await resolveAmiId(client, config.amiId);
 
     console.log(`Instance "${name}" does not exist.`);
-    console.log(`  Type: ${config.instanceType}`);
+    console.log(`  Type: ${config.instanceType}${config.useSpot ? " (spot)" : ""}`);
     console.log(`  AMI: ${config.amiId} (${amiId})`);
     console.log(`  Volume: ${config.volumeSize ?? 8}GB`);
     console.log(`  Region: ${config.region}`);
@@ -512,7 +513,7 @@ async function ensureInstance(
     const created = await client.send(
       new RunInstancesCommand({
         ImageId: amiId,
-        InstanceType: config.instanceType,
+        InstanceType: config.instanceType as any,
         KeyName: infra.keyName,
         MinCount: 1,
         MaxCount: 1,
@@ -534,6 +535,15 @@ async function ensureInstance(
             Groups: [infra.securityGroupId],
           },
         ],
+        InstanceMarketOptions: config.useSpot
+          ? {
+              MarketType: "spot",
+              SpotOptions: {
+                SpotInstanceType: "persistent",
+                InstanceInterruptionBehavior: "stop",
+              },
+            }
+          : undefined,
         TagSpecifications: [
           {
             ResourceType: "instance",
@@ -543,6 +553,10 @@ async function ensureInstance(
             ],
           },
         ],
+        MetadataOptions: {
+          HttpTokens: "required", // Enforce IMDSv2
+          HttpEndpoint: "enabled",
+        },
       })
     );
 
@@ -661,6 +675,41 @@ async function hibernateInstance(client: EC2Client, instanceId: string): Promise
       Hibernate: false, // true requires hibernate-enabled AMI + EBS encryption
     })
   );
+}
+
+async function countLocalSshConnections(host: string): Promise<number> {
+  // Count local SSH processes connected to this host
+  const proc = Bun.spawn(["pgrep", "-f", `ssh.*${host}`], {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) {
+    // pgrep returns 1 when no matches found
+    return 0;
+  }
+
+  const output = await new Response(proc.stdout).text();
+  // Count lines (each line is a PID)
+  const pids = output.trim().split("\n").filter(Boolean);
+  return pids.length;
+}
+
+async function stopIfNoOtherSessions(
+  client: EC2Client,
+  instanceId: string,
+  host: string
+): Promise<void> {
+  const connectionCount = await countLocalSshConnections(host);
+
+  if (connectionCount > 0) {
+    log(`Skipping stop: ${connectionCount} other SSH connection(s) to ${host} still active.`);
+    return;
+  }
+
+  await hibernateInstance(client, instanceId);
 }
 
 function requireArg(value: string | undefined, label: string): string {
@@ -988,7 +1037,7 @@ async function cmdConnect(config: SbxConfig, name: string): Promise<void> {
 
   await runSsh("ssh", sshArgs);
 
-  await hibernateInstance(client, instanceId);
+  await stopIfNoOtherSessions(client, instanceId, host);
 }
 
 async function cmdTunnel(config: SbxConfig, name: string, portMap: string): Promise<void> {
@@ -1028,7 +1077,7 @@ async function cmdTunnel(config: SbxConfig, name: string, portMap: string): Prom
 
   await runSsh("ssh", sshArgs);
 
-  await hibernateInstance(client, instanceId);
+  await stopIfNoOtherSessions(client, instanceId, host);
 }
 
 async function main(): Promise<void> {
