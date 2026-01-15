@@ -48,6 +48,7 @@ const SBX_TAG = "sbx-managed";
 import { SbxConfigSchema, type SbxConfig } from "./schema";
 
 const DEFAULT_CONFIG: SbxConfig = {
+  $schema: "https://raw.githubusercontent.com/mikesoylu/sbx/refs/heads/main/schema.json",
   region: "us-east-1",
   instanceType: "t4g.micro",
   amiId: "debian-12",
@@ -100,11 +101,6 @@ async function loadConfig(): Promise<SbxConfig> {
   return parsed.data;
 }
 
-async function writeDefaultConfig(): Promise<void> {
-  await mkdir(CONFIG_DIR, { recursive: true });
-  await writeFile(CONFIG_PATH, JSON.stringify(DEFAULT_CONFIG, null, 2));
-}
-
 function getEc2Client(config: SbxConfig): EC2Client {
   if (config.aws?.accessKeyId && config.aws?.secretAccessKey) {
     return new EC2Client({
@@ -153,7 +149,7 @@ async function resolveAmiId(client: EC2Client, alias: string): Promise<string> {
 
   // Sort by creation date descending, pick newest
   images.sort((a, b) => (b.CreationDate ?? "").localeCompare(a.CreationDate ?? ""));
-  const ami = images[0].ImageId!;
+  const ami = images[0]!.ImageId!;
   log(`Resolved ${alias} -> ${ami}`);
   return ami;
 }
@@ -171,7 +167,7 @@ async function ensureVpc(client: EC2Client): Promise<string> {
   );
 
   if (existing.Vpcs?.length) {
-    return existing.Vpcs[0].VpcId!;
+    return existing.Vpcs[0]!.VpcId!;
   }
 
   log("Creating VPC...");
@@ -210,7 +206,7 @@ async function ensureInternetGateway(client: EC2Client, vpcId: string): Promise<
   );
 
   if (existing.InternetGateways?.length) {
-    return existing.InternetGateways[0].InternetGatewayId!;
+    return existing.InternetGateways[0]!.InternetGatewayId!;
   }
 
   log("Creating Internet Gateway...");
@@ -250,7 +246,7 @@ async function ensureSubnet(client: EC2Client, vpcId: string, region: string): P
   );
 
   if (existing.Subnets?.length) {
-    return existing.Subnets[0].SubnetId!;
+    return existing.Subnets[0]!.SubnetId!;
   }
 
   log("Creating Subnet...");
@@ -273,7 +269,7 @@ async function ensureSubnet(client: EC2Client, vpcId: string, region: string): P
   return subnetId;
 }
 
-async function ensureRouteTable(client: EC2Client, vpcId: string, subnetId: string, igwId: string): Promise<void> {
+async function ensureRouteTable(client: EC2Client, vpcId: string, igwId: string): Promise<void> {
   // Get the main route table for the VPC
   const tables = await client.send(
     new DescribeRouteTablesCommand({
@@ -317,7 +313,7 @@ async function ensureSecurityGroup(client: EC2Client, vpcId: string): Promise<st
   );
 
   if (existing.SecurityGroups?.length) {
-    return existing.SecurityGroups[0].GroupId!;
+    return existing.SecurityGroups[0]!.GroupId!;
   }
 
   log("Creating Security Group...");
@@ -407,7 +403,7 @@ async function ensureInfrastructure(client: EC2Client, region: string): Promise<
   const vpcId = await ensureVpc(client);
   const igwId = await ensureInternetGateway(client, vpcId);
   const subnetId = await ensureSubnet(client, vpcId, region);
-  await ensureRouteTable(client, vpcId, subnetId, igwId);
+  await ensureRouteTable(client, vpcId, igwId);
   const securityGroupId = await ensureSecurityGroup(client, vpcId);
   const { keyName, keyPath } = await ensureKeyPair(client, region);
 
@@ -456,13 +452,13 @@ function formatInstances(instances: Instance[]): string {
   const widths = headers.map((header, index) =>
     Math.max(
       header.length,
-      ...rows.map((row) => [row.name, row.id, row.type, row.state, row.ip][index].length)
+      ...rows.map((row) => [row.name, row.id, row.type, row.state, row.ip][index]!.length)
     )
   );
 
   const formatRow = (values: string[]) =>
     values
-      .map((value, index) => value.padEnd(widths[index]))
+      .map((value, index) => value.padEnd(widths[index]!))
       .join("  ")
       .trimEnd();
 
@@ -719,6 +715,37 @@ async function confirm(message: string): Promise<boolean> {
 // Commands
 // ─────────────────────────────────────────────────────────────────────────────
 
+type CloudPingResult = {
+  region: string;
+  regionName: string;
+  firstPingLatency: { avg: number };
+};
+
+type CloudPingResponse = {
+  results: CloudPingResult[];
+};
+
+async function findNearestRegion(): Promise<string> {
+  log("Finding nearest AWS region...");
+
+  try {
+    const response = await fetch("https://api.cloudping.dev/");
+    const data = (await response.json()) as CloudPingResponse;
+
+    // Results are already sorted by latency from user's location (via Cloudflare edge)
+    const nearest = data.results[0];
+    if (!nearest) {
+      throw new Error("No results from cloudping API");
+    }
+
+    log(`Nearest region: ${nearest.region} (${nearest.regionName})`);
+    return nearest.region;
+  } catch (error) {
+    log("Could not determine nearest region, defaulting to us-east-1");
+    return "us-east-1";
+  }
+}
+
 async function cmdInit(): Promise<void> {
   try {
     await readFile(CONFIG_PATH, "utf8");
@@ -729,9 +756,18 @@ async function cmdInit(): Promise<void> {
       throw error;
     }
   }
-  await writeDefaultConfig();
+
+  const region = await findNearestRegion();
+
+  const config: SbxConfig = {
+    ...DEFAULT_CONFIG,
+    region,
+  };
+
+  await mkdir(CONFIG_DIR, { recursive: true });
+  await writeFile(CONFIG_PATH, JSON.stringify(config, null, 2));
   console.log(`Created config at ${CONFIG_PATH}`);
-  console.log(`Edit it to set your region, instance type, AMI, and AWS credentials.`);
+  console.log(`Edit it to set your instance type, AMI, and AWS credentials.`);
 }
 
 async function cmdList(config: SbxConfig): Promise<void> {
@@ -900,15 +936,15 @@ async function cmdDestroy(config: SbxConfig): Promise<void> {
   }
 
   if (securityGroups.SecurityGroups?.length) {
-    console.log(`  Security Groups: ${securityGroups.SecurityGroups[0].GroupId}`);
+    console.log(`  Security Groups: ${securityGroups.SecurityGroups[0]!.GroupId}`);
   }
 
   if (subnets.Subnets?.length) {
-    console.log(`  Subnets: ${subnets.Subnets[0].SubnetId}`);
+    console.log(`  Subnets: ${subnets.Subnets[0]!.SubnetId}`);
   }
 
   if (igws.InternetGateways?.length) {
-    console.log(`  Internet Gateways: ${igws.InternetGateways[0].InternetGatewayId}`);
+    console.log(`  Internet Gateways: ${igws.InternetGateways[0]!.InternetGatewayId}`);
   }
 
   if (vpcId) {
@@ -958,21 +994,21 @@ async function cmdDestroy(config: SbxConfig): Promise<void> {
 
   // 3. Delete security group
   if (securityGroups.SecurityGroups?.length) {
-    const sgId = securityGroups.SecurityGroups[0].GroupId!;
+    const sgId = securityGroups.SecurityGroups[0]!.GroupId!;
     log(`Deleting security group ${sgId}...`);
     await client.send(new DeleteSecurityGroupCommand({ GroupId: sgId }));
   }
 
   // 4. Delete subnet
   if (subnets.Subnets?.length) {
-    const subnetId = subnets.Subnets[0].SubnetId!;
+    const subnetId = subnets.Subnets[0]!.SubnetId!;
     log(`Deleting subnet ${subnetId}...`);
     await client.send(new DeleteSubnetCommand({ SubnetId: subnetId }));
   }
 
   // 5. Detach and delete internet gateway
   if (igws.InternetGateways?.length && vpcId) {
-    const igwId = igws.InternetGateways[0].InternetGatewayId!;
+    const igwId = igws.InternetGateways[0]!.InternetGatewayId!;
     log(`Detaching internet gateway ${igwId}...`);
     await client.send(
       new DetachInternetGatewayCommand({
