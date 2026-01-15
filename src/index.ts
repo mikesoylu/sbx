@@ -45,22 +45,7 @@ const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 const KEYS_DIR = path.join(CONFIG_DIR, "keys");
 const SBX_TAG = "sbx-managed";
 
-type AwsConfig = {
-  accessKeyId?: string;
-  secretAccessKey?: string;
-  sessionToken?: string;
-  profile?: string;
-};
-
-type SbxConfig = {
-  region: string;
-  instanceType: string;
-  amiId: string;
-  sshUser: string;
-  volumeSize?: number;
-  useSpot?: boolean;
-  aws?: AwsConfig;
-};
+import { SbxConfigSchema, type SbxConfig } from "./schema";
 
 const DEFAULT_CONFIG: SbxConfig = {
   region: "us-east-1",
@@ -108,11 +93,11 @@ function log(msg: string): void {
 
 async function loadConfig(): Promise<SbxConfig> {
   const raw = await readFile(CONFIG_PATH, "utf8");
-  const parsed = JSON.parse(raw) as SbxConfig;
-  if (!parsed.region || !parsed.instanceType || !parsed.amiId) {
-    throw new Error("Config missing required fields. Run `sbx init`.");
+  const parsed = SbxConfigSchema.safeParse(JSON.parse(raw));
+  if (!parsed.success) {
+    throw new Error(`Invalid config: ${parsed.error.errors.map(e => e.message).join(", ")}`);
   }
-  return parsed;
+  return parsed.data;
 }
 
 async function writeDefaultConfig(): Promise<void> {

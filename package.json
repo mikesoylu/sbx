@@ -5,9 +5,14 @@
   "bin": {
     "sbx": "src/index.ts"
   },
+  "scripts": {
+    "generate:schema": "bun run scripts/generate-schema.ts > schema.json"
+  },
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.758.0",
-    "@aws-sdk/credential-provider-node": "^3.758.0"
+    "@aws-sdk/credential-provider-node": "^3.758.0",
+    "zod": "3",
+    "zod-to-json-schema": "^3.25.1"
   },
   "module": "src/index.ts",
   "private": true,

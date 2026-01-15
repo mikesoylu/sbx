@@ -1,0 +1,64 @@
+{
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema URL for editor autocomplete"
+    },
+    "region": {
+      "type": "string",
+      "description": "AWS region (e.g., us-east-1)"
+    },
+    "instanceType": {
+      "type": "string",
+      "description": "EC2 instance type (e.g., t4g.micro)"
+    },
+    "amiId": {
+      "type": "string",
+      "description": "AMI ID or alias (debian-12, ubuntu-24.04, al2023, etc.)"
+    },
+    "sshUser": {
+      "type": "string",
+      "description": "SSH username for the AMI (e.g., admin, ubuntu, ec2-user)"
+    },
+    "volumeSize": {
+      "type": "number",
+      "description": "EBS volume size in GB (default: 8)"
+    },
+    "useSpot": {
+      "type": "boolean",
+      "description": "Use spot instances for cost savings"
+    },
+    "aws": {
+      "type": "object",
+      "properties": {
+        "accessKeyId": {
+          "type": "string",
+          "description": "AWS access key ID"
+        },
+        "secretAccessKey": {
+          "type": "string",
+          "description": "AWS secret access key"
+        },
+        "sessionToken": {
+          "type": "string",
+          "description": "AWS session token (for temporary credentials)"
+        },
+        "profile": {
+          "type": "string",
+          "description": "AWS profile name from ~/.aws/credentials"
+        }
+      },
+      "additionalProperties": false,
+      "description": "AWS credentials configuration"
+    }
+  },
+  "required": [
+    "region",
+    "instanceType",
+    "amiId",
+    "sshUser"
+  ],
+  "additionalProperties": false,
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}
