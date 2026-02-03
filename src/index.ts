@@ -31,6 +31,8 @@ import {
   DescribeVolumesCommand,
   ModifyVolumeCommand,
   DescribeVolumesModificationsCommand,
+  DescribeSpotInstanceRequestsCommand,
+  CancelSpotInstanceRequestsCommand,
   waitUntilInstanceRunning,
   waitUntilInstanceStopped,
   waitUntilInstanceTerminated,
@@ -658,6 +660,29 @@ async function hibernateInstance(client: EC2Client, instanceId: string): Promise
   );
 }
 
+async function findSpotRequestIds(client: EC2Client, instanceId: string): Promise<string[]> {
+  const response = await client.send(
+    new DescribeSpotInstanceRequestsCommand({
+      Filters: [{ Name: "instance-id", Values: [instanceId] }],
+    })
+  );
+
+  return (
+    response.SpotInstanceRequests?.map((request) => request.SpotInstanceRequestId).filter(
+      (id): id is string => Boolean(id)
+    ) ?? []
+  );
+}
+
+async function cancelSpotRequests(client: EC2Client, requestIds: string[]): Promise<void> {
+  if (requestIds.length === 0) {
+    return;
+  }
+
+  log(`Canceling ${requestIds.length} spot request(s)...`);
+  await client.send(new CancelSpotInstanceRequestsCommand({ SpotInstanceRequestIds: requestIds }));
+}
+
 async function countLocalSshConnections(host: string): Promise<number> {
   // Count local SSH processes connected to this host
   const proc = Bun.spawn(["pgrep", "-f", `ssh.*${host}`], {
@@ -681,7 +706,7 @@ async function countLocalSshConnections(host: string): Promise<number> {
 async function stopIfNoOtherSessions(
   client: EC2Client,
   instanceId: string,
-  host: string
+  host: string,
 ): Promise<void> {
   const connectionCount = await countLocalSshConnections(host);
 
@@ -691,6 +716,10 @@ async function stopIfNoOtherSessions(
   }
 
   await hibernateInstance(client, instanceId);
+}
+
+function isSpotInstance(instance: Instance): boolean {
+  return instance.InstanceLifecycle === "spot";
 }
 
 function requireArg(value: string | undefined, label: string): string {
@@ -783,6 +812,12 @@ async function cmdDelete(config: SbxConfig, name: string): Promise<void> {
   if (!instance?.InstanceId) {
     throw new Error(`No instance found with name ${name}`);
   }
+
+  if (isSpotInstance(instance)) {
+    const requestIds = await findSpotRequestIds(client, instance.InstanceId);
+    await cancelSpotRequests(client, requestIds);
+  }
+
   await client.send(
     new TerminateInstancesCommand({
       InstanceIds: [instance.InstanceId],
@@ -972,6 +1007,16 @@ async function cmdDestroy(config: SbxConfig): Promise<void> {
 
   // 1. Terminate all instances
   if (instances.length > 0) {
+    const spotRequestIds = (
+      await Promise.all(
+        instances
+          .filter((instance) => instance.InstanceId && isSpotInstance(instance))
+          .map((instance) => findSpotRequestIds(client, instance.InstanceId!))
+      )
+    ).flat();
+
+    await cancelSpotRequests(client, Array.from(new Set(spotRequestIds)));
+
     const instanceIds = instances.map((i) => i.InstanceId!);
     log(`Terminating ${instanceIds.length} instance(s)...`);
     await client.send(new TerminateInstancesCommand({ InstanceIds: instanceIds }));
