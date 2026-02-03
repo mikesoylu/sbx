@@ -56,6 +56,7 @@ Config lives at `~/.config/sbx/config.json`:
 | `amiId` | AMI ID or alias |
 | `sshUser` | SSH username (depends on AMI) |
 | `volumeSize` | Root volume size in GB (default: 8) |
+| `useSpot` | Use spot instances for cost savings |
 | `aws.accessKeyId` | AWS access key (optional if using profile) |
 | `aws.secretAccessKey` | AWS secret key |
 | `aws.profile` | AWS profile name (alternative to keys) |
@@ -79,6 +80,12 @@ Config lives at `~/.config/sbx/config.json`:
 | `al2023-amd64`, `amazon-linux-2-amd64` | `ec2-user` |
 
 Or use a direct AMI ID: `ami-xxxxxxxxx`
+
+### Spot Instances (`useSpot`)
+
+Set `useSpot: true` in your config to request a spot instance instead of on-demand. sbx creates a persistent spot request and uses the `stop` interruption behavior, which means AWS can reclaim capacity at any time and your instance may stop. When that happens, just run `sbx <name>` again to start it back up when capacity is available.
+
+On `sbx delete <name>` (or `sbx destroy`), sbx will also cancel any associated spot request to avoid it re-fulfilling later.
 
 ## Usage
 
